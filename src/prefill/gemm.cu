@@ -428,8 +428,14 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         return e && e[0] == '1';
     }();
     if (!enabled || mmq_failed_ || !mmq::built() || !mmq::fits(type, N)) return false;
-    if (K > kMaxK || K % 32 != 0 || (K % 256 != 0 && type != 8 && type != 20 && type != 42)) return false;
-    int64_t R = scratch_elems_ / (2 * K);
+    // K must be a multiple of 256: llama.cpp's MMQ loads the weights in 256-value K chunks, and the
+    // chunk past a partial row reads past the row (the next row's bytes - or, for the last weight
+    // row, bytes past the tensor, which no caller guarantees to be zeros). The MoE path is safe
+    // because its gather buffers carry a zeroed tail; a dense tensor is passed as-is, so a K that
+    // is not a full chunk multiple (e.g. the 640-value shared-expert down: 20 blocks of 32) stays on
+    // the dequantize + cuBLAS path.
+    if (K > kMaxK || K % 256 != 0) return false;
+    int64_t R = scratch_elems_ / (2 * K);   // FP32 activations for a chunk fit in the FP16 dequant scratch
     if (R > kRows) R = kRows;
     if (R > T) R = T;
     if (R < 1) return false;
