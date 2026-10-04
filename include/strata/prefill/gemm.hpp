@@ -52,6 +52,11 @@ private:
     void* workspace_ = nullptr;
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
+    bool native_mmq(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
+                    int64_t ldy);
+    void* mmq_ctx_ = nullptr;
+    void* mmq_buf_ = nullptr;
+    bool mmq_failed_ = false;
 };
 
 

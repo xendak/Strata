@@ -85,4 +85,9 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
 /// dst[i] = i for i < n (the identity row map MMQ's MoE mode writes through).
 void iota(int32_t* dst, int64_t n, void* stream);
 
+/// y[i] = float(x[i]) for FP16 bits x.
+void f16_to_f32(const uint16_t* x, float* y, int64_t n, void* stream);
+/// dst = {0, rows} (the bounds of one matrix; dst on the device).
+void set_bounds(int32_t* dst, int32_t rows, void* stream);
+
 }  // namespace strata::prefill::mmq

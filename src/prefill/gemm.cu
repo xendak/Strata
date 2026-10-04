@@ -1,6 +1,9 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
+#ifdef STRATA_PREFILL_MMQ
+#include "strata/prefill/moe_mmq.hpp"
+#endif
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -294,6 +297,10 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
 }  // namespace
 
 Gemm::~Gemm() {
+#ifdef STRATA_PREFILL_MMQ
+    delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
+    if (mmq_buf_) cudaFree(mmq_buf_);
+#endif
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
@@ -411,8 +418,72 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
+#ifdef STRATA_PREFILL_MMQ
+bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int64_t T, int64_t N, int64_t K,
+                      int64_t ldy) {
+    namespace mmq = strata::prefill::mmq;
+    constexpr int64_t kRows = 1024, kMaxK = 8192;
+    static const bool enabled = [] {
+        const char* e = std::getenv("STRATA_DENSE_MMQ");
+        return e && e[0] == '1';
+    }();
+    if (!enabled || mmq_failed_ || !mmq::built() || !mmq::fits(type, N)) return false;
+    if (K > kMaxK || K % 32 != 0 || (K % 256 != 0 && type != 8 && type != 20 && type != 42)) return false;
+    int64_t R = scratch_elems_ / (2 * K);
+    if (R > kRows) R = kRows;
+    if (R > T) R = T;
+    if (R < 1) return false;
+    if (ldy <= 0) ldy = N;
+
+    const auto up = [](size_t v) { return (v + 255) & ~(size_t) 255; };
+    const size_t ident_off = up(mmq::q8_bytes(kRows, kMaxK));
+    const size_t bounds_off = ident_off + up((size_t) kRows * 4);
+    if (!mmq_buf_) {
+        if (cudaMalloc(&mmq_buf_, bounds_off + 256) != cudaSuccess) {
+            cudaGetLastError();
+            mmq_failed_ = true;
+            return false;
+        }
+        mmq_ctx_ = new mmq::Context();
+        mmq::iota((int32_t*) ((uint8_t*) mmq_buf_ + ident_off), kRows, stream_);
+        std::fprintf(stderr, "prefill gemm: dense MMQ on (STRATA_DENSE_MMQ=1)\n");
+    }
+    void* xq = mmq_buf_;
+    const int32_t* ident = (const int32_t*) ((uint8_t*) mmq_buf_ + ident_off);
+    int32_t* bounds = (int32_t*) ((uint8_t*) mmq_buf_ + bounds_off);
+    float* xf = (float*) scratch_;
+    auto* ctx = static_cast<mmq::Context*>(mmq_ctx_);
+
+    for (int64_t r0 = 0; r0 < T; r0 += R) {
+        const int64_t rows = (T - r0 < R) ? T - r0 : R;
+        mmq::f16_to_f32(X + r0 * K, xf, rows * K, stream_);
+        mmq::quantize(xf, nullptr, xq, type, K, K, rows, stream_);
+        mmq::set_bounds(bounds, (int32_t) rows, stream_);
+        mmq::Product p;
+        p.w = W;
+        p.type = type;
+        p.w_rows = N;
+        p.w_cols = K;
+        p.expert_bytes = mmq::matrix_bytes(type, N, K);
+        p.n = 1;
+        p.xq = xq;
+        p.bounds = bounds;
+        p.ids = ident;
+        p.total_rows = rows;
+        p.max_rows = rows;
+        p.dst = Y + r0 * ldy;
+        p.ld_dst = ldy;
+        ctx->run(p, stream_);
+    }
+    return true;
+}
+#endif
+
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                   int64_t ldy, float beta) {
+#ifdef STRATA_PREFILL_MMQ
+    if (beta == 0.0f && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
+#endif
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.
         const int64_t rows = scratch_elems_ / K;
