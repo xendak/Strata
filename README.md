@@ -2,6 +2,9 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> [!NOTE]
+> **Experimental gfx1030 branch.** This is a fork of [Niko1221/Strata](https://github.com/Niko1221/Strata). The branch collects work on AMD RDNA2 cards (gfx1030: RX 6800, RX 6900 series): the HIP build, the dense MMQ projections, and the FP16 prompt path. Nothing on it is stable, and upstream owns the merge decisions. For a normal install use [upstream](https://github.com/Niko1221/Strata) or its [releases](https://github.com/Niko1221/Strata/releases).
+
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
 
